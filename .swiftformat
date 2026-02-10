@@ -1,0 +1,96 @@
+# ============================================================================
+# SwiftFormat Configuration
+# 基于 /Users/sun/Projects/Webull/HapticTide/ScreenPresenter/.swiftformat
+# 适配 ToneCurveEditor 项目
+# ============================================================================
+
+--swiftversion 6.0
+
+# 排除构建产物、包管理缓存及软链的外部项目
+--exclude Pods,Carthage,.build,.swiftpm,DerivedData,BuildTools,ImageToneCurveEditor
+
+--indent 4
+--tabwidth 4
+--smarttabs disabled
+--indentcase false
+--ifdef indent
+--trimwhitespace always
+--xcodeindentation disabled
+
+--linebreaks lf
+--allman false
+--elseposition same-line
+--guardelse auto
+
+--maxwidth 120
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--wrapconditions before-first
+--wrapternary before-operators
+--wrapreturntype preserve
+--wraptypealiases preserve
+--closingparen balanced
+
+--commas always
+--typeattributes preserve
+--ranges spaced
+--nospaceoperators ..<,...
+--operatorfunc spaced
+
+--decimalgrouping 3,6
+--binarygrouping 4,8
+--octalgrouping 3,8
+--hexgrouping 4,8
+--fractiongrouping disabled
+--exponentgrouping disabled
+--hexliteralcase lowercase
+--exponentcase lowercase
+
+--importgrouping testable-last
+
+--self remove
+--stripunusedargs closure-only
+--voidtype void
+
+--semicolons inline
+--header ignore
+--conflictmarkers reject
+--fragment false
+
+--lineaftermarks true
+--markcategories false
+
+--enable blankLinesBetweenScopes
+--enable blankLinesAtEndOfScope
+--enable blankLinesAtStartOfScope
+--enable consecutiveBlankLines
+--enable consecutiveSpaces
+--enable duplicateImports
+--enable emptyBraces
+--enable linebreakAtEndOfFile
+--enable redundantBreak
+--enable redundantGet
+--enable redundantInit
+--enable redundantLet
+--enable redundantLetError
+--enable redundantNilInit
+--enable redundantObjc
+--enable redundantParens
+--enable redundantPattern
+--enable redundantRawValues
+--enable redundantReturn
+--enable redundantSelf
+--enable redundantType
+--enable redundantVoidReturnType
+--enable sortImports
+--enable strongOutlets
+--enable trailingClosures
+--enable trailingCommas
+--enable unusedArguments
+
+--disable acronyms
+--disable sortDeclarations
+--disable wrapMultilineStatementBraces
+--disable docComments
+--disable blankLineAfterImports

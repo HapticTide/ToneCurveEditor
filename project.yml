@@ -1,0 +1,74 @@
+name: ToneCurveEditorDemo
+
+options:
+  bundleIdPrefix: com.haptic.tide
+  deploymentTarget:
+    iOS: "15.0"
+
+packages:
+  ToneCurveEditor:
+    path: .
+
+targets:
+  ToneCurveEditorDemo:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - Demo
+    dependencies:
+      - package: ToneCurveEditor
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.haptic.tide.ToneCurveEditorDemo
+        INFOPLIST_FILE: Demo/Info.plist
+    info:
+      path: Demo/Info.plist
+      properties:
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+  DemoTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - DemoTests/ToneCurveEditorSchemeTests.swift
+    dependencies:
+      - target: ToneCurveEditorDemo
+      - package: ToneCurveEditor
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.haptic.tide.ToneCurveEditorDemoTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  ToneCurveEditorDemo:
+    build:
+      targets:
+        ToneCurveEditorDemo: all
+
+  ToneCurveEditor:
+    build:
+      targets:
+        ToneCurveEditorDemo: all
+        DemoTests: [build, test]
+    test:
+      gatherCoverageData: false
+      targets:
+        - name: DemoTests
