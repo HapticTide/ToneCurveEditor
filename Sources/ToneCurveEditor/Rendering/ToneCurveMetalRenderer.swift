@@ -77,6 +77,8 @@ public final class ToneCurveMetalRenderer: @unchecked Sendable, ToneCurveRenderi
     }
 
     public func render(image: CIImage, curveSet: ToneCurveSet) throws -> CIImage {
+        // Backward-compatible synchronous path retained for protocol conformance.
+        // The demo uses renderAsync() via ToneCurveRenderEngine to avoid blocking waits.
         let extent = image.extent.integral
         guard extent.width > 0, extent.height > 0 else {
             throw ToneCurveRenderingError.invalidImageExtent
@@ -86,8 +88,16 @@ public final class ToneCurveMetalRenderer: @unchecked Sendable, ToneCurveRenderi
         let height = Int(extent.height)
 
         guard
-            let inputTexture = makeImageTexture(width: width, height: height),
-            let outputTexture = makeImageTexture(width: width, height: height),
+            let inputTexture = makeImageTexture(
+                width: width,
+                height: height,
+                storageMode: .private
+            ),
+            let outputTexture = makeImageTexture(
+                width: width,
+                height: height,
+                storageMode: .shared
+            ),
             let lutTexture = try makeLUTTexture(curveSet: curveSet)
         else {
             throw ToneCurveRenderingError.textureCreationFailed
@@ -150,7 +160,88 @@ public final class ToneCurveMetalRenderer: @unchecked Sendable, ToneCurveRenderi
         return outputImage
     }
 
-    private func makeImageTexture(width: Int, height: Int) -> MTLTexture? {
+    public func renderAsync(image: CIImage, curveSet: ToneCurveSet) async throws -> CIImage {
+        let extent = image.extent.integral
+        guard extent.width > 0, extent.height > 0 else {
+            throw ToneCurveRenderingError.invalidImageExtent
+        }
+
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+
+        guard
+            let inputTexture = makeImageTexture(
+                width: width,
+                height: height,
+                storageMode: .private
+            ),
+            let outputTexture = makeImageTexture(
+                width: width,
+                height: height,
+                storageMode: .shared
+            ),
+            let lutTexture = try makeLUTTexture(curveSet: curveSet)
+        else {
+            throw ToneCurveRenderingError.textureCreationFailed
+        }
+
+        ciContext.render(
+            image,
+            to: inputTexture,
+            commandBuffer: nil,
+            bounds: extent,
+            colorSpace: colorSpace
+        )
+
+        guard
+            let commandBuffer = commandQueue.makeCommandBuffer(),
+            let encoder = commandBuffer.makeComputeCommandEncoder()
+        else {
+            throw ToneCurveRenderingError.commandQueueUnavailable
+        }
+
+        encoder.setComputePipelineState(pipelineState)
+        encoder.setTexture(inputTexture, index: 0)
+        encoder.setTexture(outputTexture, index: 1)
+        encoder.setTexture(lutTexture, index: 2)
+
+        let threadWidth = max(1, pipelineState.threadExecutionWidth)
+        let threadHeight = max(1, pipelineState.maxTotalThreadsPerThreadgroup / threadWidth)
+        let threadsPerGroup = MTLSize(width: threadWidth, height: threadHeight, depth: 1)
+        let threadgroupsPerGrid = MTLSize(
+            width: (width + threadWidth - 1) / threadWidth,
+            height: (height + threadHeight - 1) / threadHeight,
+            depth: 1
+        )
+
+        encoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threadsPerGroup)
+        encoder.endEncoding()
+        commandBuffer.commit()
+
+        try await waitUntilCompleted(commandBuffer)
+        try Task.checkCancellation()
+
+        guard var outputImage = CIImage(mtlTexture: outputTexture, options: [.colorSpace: colorSpace]) else {
+            throw ToneCurveRenderingError.outputImageCreationFailed
+        }
+
+        outputImage = outputImage
+            .transformed(
+                by: CGAffineTransform(
+                    translationX: extent.origin.x,
+                    y: extent.origin.y
+                )
+            )
+            .cropped(to: extent)
+
+        return outputImage
+    }
+
+    private func makeImageTexture(
+        width: Int,
+        height: Int,
+        storageMode: MTLStorageMode
+    ) -> MTLTexture? {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
             width: width,
@@ -158,7 +249,7 @@ public final class ToneCurveMetalRenderer: @unchecked Sendable, ToneCurveRenderi
             mipmapped: false
         )
         descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .private
+        descriptor.storageMode = storageMode
         return device.makeTexture(descriptor: descriptor)
     }
 
@@ -194,5 +285,21 @@ public final class ToneCurveMetalRenderer: @unchecked Sendable, ToneCurveRenderi
         }
 
         return texture
+    }
+
+    private func waitUntilCompleted(_ commandBuffer: MTLCommandBuffer) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            Task.detached(priority: .userInitiated) {
+                commandBuffer.waitUntilCompleted()
+                if commandBuffer.status == .error {
+                    continuation.resume(
+                        throwing: commandBuffer.error
+                            ?? ToneCurveRenderingError.pipelineUnavailable("CommandBuffer failed")
+                    )
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
     }
 }

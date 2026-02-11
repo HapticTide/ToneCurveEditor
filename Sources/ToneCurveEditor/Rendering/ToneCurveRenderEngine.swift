@@ -55,7 +55,12 @@ public actor ToneCurveRenderEngine {
         let renderer = renderer
         let task = Task(priority: .userInitiated) {
             try Task.checkCancellation()
-            let output = try renderer.render(image: image, curveSet: curveSet)
+            let output: CIImage
+            if let metalRenderer = renderer as? ToneCurveMetalRenderer {
+                output = try await metalRenderer.renderAsync(image: image, curveSet: curveSet)
+            } else {
+                output = try renderer.render(image: image, curveSet: curveSet)
+            }
             try Task.checkCancellation()
             return output
         }

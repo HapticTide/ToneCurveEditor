@@ -24,31 +24,51 @@ final class ViewController: UIViewController {
     private let pickerCoordinator = ImagePickerCoordinator()
     private let displayContext = CIContext(options: nil)
     private let renderEngine: ToneCurveRenderEngine?
+    private let interactiveRenderEngine: ToneCurveRenderEngine?
 
     private var inputImage: UIImage?
     private var inputCIImage: CIImage?
     private var interactivePreviewCIImage: CIImage?
-    private var renderTask: Task<Void, Never>?
-    private var interactiveRenderScheduledTask: Task<Void, Never>?
+    private var fullRenderTask: Task<Void, Never>?
+    private var interactiveRenderTask: Task<Void, Never>?
     private var isDraggingCurve = false
-    private var lastInteractiveRenderUptime: TimeInterval = 0
+    private var interactiveRenderInFlight = false
+    private var interactiveRenderPending = false
+    private var pendingInteractiveCurveSet: ToneCurveSet?
 
-    private let interactiveRenderFPS: Double = 30
-    private let interactivePreviewMaxDimension: CGFloat = 1600
+    private let interactivePreviewMaxDimension: CGFloat = 960
 
     init() {
-        renderEngine = try? ToneCurveRenderEngine(backendPreference: .metalPreferred)
+        renderEngine = try? ToneCurveRenderEngine(
+            backendPreference: .metalPreferred,
+            lutResolution: 1024,
+            cubeDimension: 64
+        )
+        interactiveRenderEngine = try? ToneCurveRenderEngine(
+            backendPreference: .metalPreferred,
+            lutResolution: 256,
+            cubeDimension: 32
+        )
         super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder: NSCoder) {
-        renderEngine = try? ToneCurveRenderEngine(backendPreference: .metalPreferred)
+        renderEngine = try? ToneCurveRenderEngine(
+            backendPreference: .metalPreferred,
+            lutResolution: 1024,
+            cubeDimension: 64
+        )
+        interactiveRenderEngine = try? ToneCurveRenderEngine(
+            backendPreference: .metalPreferred,
+            lutResolution: 256,
+            cubeDimension: 32
+        )
         super.init(coder: coder)
     }
 
     deinit {
-        renderTask?.cancel()
-        interactiveRenderScheduledTask?.cancel()
+        fullRenderTask?.cancel()
+        interactiveRenderTask?.cancel()
     }
 }
 
@@ -147,8 +167,11 @@ extension ViewController {
         super.viewDidDisappear(animated)
         if isMovingFromParent || isBeingDismissed {
             isDraggingCurve = false
-            renderTask?.cancel()
-            interactiveRenderScheduledTask?.cancel()
+            interactiveRenderInFlight = false
+            interactiveRenderPending = false
+            pendingInteractiveCurveSet = nil
+            fullRenderTask?.cancel()
+            interactiveRenderTask?.cancel()
         }
     }
 }
@@ -269,11 +292,17 @@ private extension ViewController {
         inputCIImage = makeCIImage(from: image)
         interactivePreviewCIImage = makeInteractivePreviewCIImage(from: inputCIImage)
         previewView.originalImage = image
+        previewView.processedCIImage = nil
         previewView.processedImage = image
+        previewView.processedCIImage = inputCIImage
         renderCurrentImage(quality: .full)
     }
 
-    func renderCurrentImage(quality: RenderQuality) {
+    func renderCurrentImage(
+        quality: RenderQuality,
+        curveSetOverride: ToneCurveSet? = nil,
+        completion: (() -> Void)? = nil
+    ) {
         let sourceImage: CIImage?
         switch quality {
         case .interactive:
@@ -286,37 +315,49 @@ private extension ViewController {
             return
         }
 
-        guard let renderEngine else {
+        let activeEngine: ToneCurveRenderEngine?
+        switch quality {
+        case .interactive:
+            activeEngine = interactiveRenderEngine ?? renderEngine
+        case .full:
+            activeEngine = renderEngine ?? interactiveRenderEngine
+        }
+
+        guard let activeEngine else {
             statusLabel.text = "Renderer unavailable."
             previewView.processedImage = inputImage
+            previewView.processedCIImage = inputCIImage
             return
         }
 
-        let curveSet = editorView.curveSet
-        renderTask?.cancel()
+        let curveSet = curveSetOverride ?? editorView.curveSet
+        if quality == .full {
+            fullRenderTask?.cancel()
+        } else {
+            interactiveRenderTask?.cancel()
+        }
         if quality == .full {
             statusLabel.text = "Rendering..."
         }
 
-        renderTask = Task { [weak self] in
+        let task = Task { [weak self] in
+            defer {
+                if let completion {
+                    Task { @MainActor in
+                        completion()
+                    }
+                }
+            }
             guard let self else {
                 return
             }
 
             do {
-                let outputCIImage = try await renderEngine.render(image: sourceImage, curveSet: curveSet)
+                let outputCIImage = try await activeEngine.render(image: sourceImage, curveSet: curveSet)
                 try Task.checkCancellation()
 
-                guard let cgImage = displayContext.createCGImage(outputCIImage, from: outputCIImage.extent) else {
-                    await MainActor.run {
-                        self.statusLabel.text = "Render failed: createCGImage returned nil."
-                    }
-                    return
-                }
-
-                let renderedImage = UIImage(cgImage: cgImage)
                 await MainActor.run {
-                    self.previewView.processedImage = renderedImage
+                    self.previewView.processedCIImage = outputCIImage
                     if quality == .full {
                         self.statusLabel.text = "Rendered using \(self.renderEngineStatusText())."
                     }
@@ -328,6 +369,12 @@ private extension ViewController {
                     self.statusLabel.text = "Render failed: \(error.localizedDescription)"
                 }
             }
+        }
+
+        if quality == .full {
+            fullRenderTask = task
+        } else {
+            interactiveRenderTask = task
         }
     }
 
@@ -376,30 +423,38 @@ private extension ViewController {
 
     func scheduleInteractiveRender() {
         guard isDraggingCurve else {
+            interactiveRenderPending = false
+            pendingInteractiveCurveSet = nil
             renderCurrentImage(quality: .full)
             return
         }
 
-        let now = ProcessInfo.processInfo.systemUptime
-        let minInterval = 1 / interactiveRenderFPS
-        let elapsed = now - lastInteractiveRenderUptime
+        interactiveRenderPending = true
+        startInteractiveRenderIfNeeded()
+    }
 
-        if elapsed >= minInterval {
-            lastInteractiveRenderUptime = now
-            renderCurrentImage(quality: .interactive)
+    @MainActor
+    func startInteractiveRenderIfNeeded() {
+        guard isDraggingCurve, interactiveRenderPending, !interactiveRenderInFlight else {
             return
         }
 
-        interactiveRenderScheduledTask?.cancel()
-        let delay = max(0, minInterval - elapsed)
-        interactiveRenderScheduledTask = Task { [weak self] in
-            let delayNanos = UInt64(delay * 1_000_000_000)
-            try? await Task.sleep(nanoseconds: delayNanos)
-            guard let self, !Task.isCancelled, self.isDraggingCurve else {
+        interactiveRenderPending = false
+        interactiveRenderInFlight = true
+        let curveSet = pendingInteractiveCurveSet ?? editorView.curveSet
+        pendingInteractiveCurveSet = nil
+
+        renderCurrentImage(
+            quality: .interactive,
+            curveSetOverride: curveSet
+        ) { [weak self] in
+            guard let self else {
                 return
             }
-            self.lastInteractiveRenderUptime = ProcessInfo.processInfo.systemUptime
-            self.renderCurrentImage(quality: .interactive)
+            self.interactiveRenderInFlight = false
+            if self.isDraggingCurve, self.interactiveRenderPending {
+                self.startInteractiveRenderIfNeeded()
+            }
         }
     }
 
@@ -446,20 +501,32 @@ private extension ViewController {
         if presetSegmentedControl.selectedSegmentIndex != UISegmentedControl.noSegment {
             presetSegmentedControl.selectedSegmentIndex = UISegmentedControl.noSegment
         }
+        pendingInteractiveCurveSet = editorView.curveSet
         scheduleInteractiveRender()
     }
 
     @objc
     func curveEditingDidBegin() {
         isDraggingCurve = true
-        interactiveRenderScheduledTask?.cancel()
+        interactiveRenderInFlight = false
+        interactiveRenderPending = false
+        pendingInteractiveCurveSet = editorView.curveSet
+        fullRenderTask?.cancel()
+        interactiveRenderTask?.cancel()
+        Task { [renderEngine, interactiveRenderEngine] in
+            await renderEngine?.cancelInFlight()
+            await interactiveRenderEngine?.cancelInFlight()
+        }
         statusLabel.text = "Rendering preview..."
+        scheduleInteractiveRender()
     }
 
     @objc
     func curveEditingDidEnd() {
         isDraggingCurve = false
-        interactiveRenderScheduledTask?.cancel()
+        interactiveRenderPending = false
+        pendingInteractiveCurveSet = nil
+        interactiveRenderInFlight = false
         renderCurrentImage(quality: .full)
     }
 }

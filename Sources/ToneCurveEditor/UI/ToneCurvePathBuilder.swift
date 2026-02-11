@@ -12,24 +12,40 @@ public enum ToneCurvePathBuilder {
     public static func makePath(
         for curve: ToneCurve,
         in plotRect: CGRect,
-        samplesPerSegment: Int = 48
+        samplesPerSegment: Int = 64
     ) -> CGPath {
-        let segmentCount = max(1, curve.points.count - 1)
-        let sampleCount = max(2, segmentCount * max(2, samplesPerSegment) + 1)
+        let points = curve.points
+        guard points.count >= 2 else {
+            return CGMutablePath()
+        }
 
+        let segmentSampleCount = max(2, samplesPerSegment)
         let path = CGMutablePath()
-        for index in 0..<sampleCount {
-            let x = Float(index) / Float(sampleCount - 1)
-            let y = ToneCurveSampler.sample(curve: curve, at: x)
-            let point = ToneCurveEditorGeometry.viewPoint(
-                from: ToneCurvePoint(x: x, y: y),
-                in: plotRect
-            )
+        var didMove = false
 
-            if index == 0 {
-                path.move(to: point)
-            } else {
-                path.addLine(to: point)
+        for segmentIndex in 0..<(points.count - 1) {
+            let start = points[segmentIndex]
+            let end = points[segmentIndex + 1]
+
+            for sampleIndex in 0...segmentSampleCount {
+                if segmentIndex > 0, sampleIndex == 0 {
+                    continue
+                }
+
+                let t = Float(sampleIndex) / Float(segmentSampleCount)
+                let x = start.x + ((end.x - start.x) * t)
+                let y = ToneCurveSampler.sample(curve: curve, at: x)
+                let point = ToneCurveEditorGeometry.viewPoint(
+                    from: ToneCurvePoint(x: x, y: y),
+                    in: plotRect
+                )
+
+                if !didMove {
+                    path.move(to: point)
+                    didMove = true
+                } else {
+                    path.addLine(to: point)
+                }
             }
         }
 
