@@ -16,11 +16,14 @@ targets:
     deploymentTarget: "15.0"
     sources:
       - Demo
+    resources:
+      - Demo/Assets.xcassets
     dependencies:
       - package: ToneCurveEditor
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.haptic.tide.ToneCurveEditorDemo
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
         INFOPLIST_FILE: Demo/Info.plist
     info:
       path: Demo/Info.plist

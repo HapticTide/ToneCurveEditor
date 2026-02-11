@@ -27,7 +27,14 @@ final class ViewController: UIViewController {
 
     private var inputImage: UIImage?
     private var inputCIImage: CIImage?
+    private var interactivePreviewCIImage: CIImage?
     private var renderTask: Task<Void, Never>?
+    private var interactiveRenderScheduledTask: Task<Void, Never>?
+    private var isDraggingCurve = false
+    private var lastInteractiveRenderUptime: TimeInterval = 0
+
+    private let interactiveRenderFPS: Double = 30
+    private let interactivePreviewMaxDimension: CGFloat = 1600
 
     init() {
         renderEngine = try? ToneCurveRenderEngine(backendPreference: .metalPreferred)
@@ -41,6 +48,7 @@ final class ViewController: UIViewController {
 
     deinit {
         renderTask?.cancel()
+        interactiveRenderScheduledTask?.cancel()
     }
 }
 
@@ -138,7 +146,9 @@ extension ViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isMovingFromParent || isBeingDismissed {
+            isDraggingCurve = false
             renderTask?.cancel()
+            interactiveRenderScheduledTask?.cancel()
         }
     }
 }
@@ -156,7 +166,7 @@ private extension ViewController {
         dragFeelLabel.font = .preferredFont(forTextStyle: .headline)
 
         let dragFeelStack = UIStackView(arrangedSubviews: [dragFeelLabel, dragFeelSegmentedControl])
-        dragFeelStack.axis = .vertical
+        dragFeelStack.axis = .horizontal
         dragFeelStack.spacing = 8
 
         let editorSectionLabel = UILabel()
@@ -172,10 +182,9 @@ private extension ViewController {
 
         let editorRow = UIStackView(arrangedSubviews: [channelSelectorView, editorView])
         editorRow.axis = .horizontal
-        editorRow.spacing = 12
+        editorRow.spacing = 8
         editorRow.alignment = .fill
-        channelSelectorView.widthAnchor.constraint(equalToConstant: 50).isActive = true
-
+        channelSelectorView.widthAnchor.constraint(equalToConstant: 44).isActive = true
         channelSelectorView.setContentHuggingPriority(.required, for: .vertical)
         channelSelectorView.setContentCompressionResistancePriority(.required, for: .vertical)
 
@@ -186,9 +195,9 @@ private extension ViewController {
         let stack = UIStackView(arrangedSubviews: [
             previewView,
             editorSectionLabel,
-            dragFeelStack,
             editorRow,
             presetStack,
+            dragFeelStack,
             statusLabel,
         ])
         stack.axis = .vertical
@@ -226,6 +235,8 @@ private extension ViewController {
         presetSegmentedControl.addTarget(self, action: #selector(presetChanged), for: .valueChanged)
         dragFeelSegmentedControl.addTarget(self, action: #selector(dragFeelChanged), for: .valueChanged)
         editorView.addTarget(self, action: #selector(curveValueChanged), for: .valueChanged)
+        editorView.addTarget(self, action: #selector(curveEditingDidBegin), for: .editingDidBegin)
+        editorView.addTarget(self, action: #selector(curveEditingDidEnd), for: .editingDidEnd)
 
         channelSelectorView.onChannelChanged = { [weak self] channel in
             self?.editorView.activeChannel = channel
@@ -255,14 +266,23 @@ private extension ViewController {
 
     func applyPickedImage(_ image: UIImage) {
         inputImage = image
-        inputCIImage = CIImage(image: image) ?? image.ciImage ?? image.cgImage.map { CIImage(cgImage: $0) }
+        inputCIImage = makeCIImage(from: image)
+        interactivePreviewCIImage = makeInteractivePreviewCIImage(from: inputCIImage)
         previewView.originalImage = image
         previewView.processedImage = image
-        renderCurrentImage()
+        renderCurrentImage(quality: .full)
     }
 
-    func renderCurrentImage() {
-        guard let sourceImage = inputCIImage else {
+    func renderCurrentImage(quality: RenderQuality) {
+        let sourceImage: CIImage?
+        switch quality {
+        case .interactive:
+            sourceImage = interactivePreviewCIImage ?? inputCIImage
+        case .full:
+            sourceImage = inputCIImage
+        }
+
+        guard let sourceImage else {
             return
         }
 
@@ -274,7 +294,9 @@ private extension ViewController {
 
         let curveSet = editorView.curveSet
         renderTask?.cancel()
-        statusLabel.text = "Rendering..."
+        if quality == .full {
+            statusLabel.text = "Rendering..."
+        }
 
         renderTask = Task { [weak self] in
             guard let self else {
@@ -295,7 +317,9 @@ private extension ViewController {
                 let renderedImage = UIImage(cgImage: cgImage)
                 await MainActor.run {
                     self.previewView.processedImage = renderedImage
-                    self.statusLabel.text = "Rendered using \(self.renderEngineStatusText())."
+                    if quality == .full {
+                        self.statusLabel.text = "Rendered using \(self.renderEngineStatusText())."
+                    }
                 }
             } catch is CancellationError {
                 return
@@ -313,6 +337,76 @@ private extension ViewController {
         }
         return renderEngine.usingMetal ? "Metal" : "CIColorCube fallback"
     }
+
+    func makeCIImage(from image: UIImage) -> CIImage? {
+        CIImage(image: image) ?? image.ciImage ?? image.cgImage.map { CIImage(cgImage: $0) }
+    }
+
+    func makeInteractivePreviewCIImage(from sourceImage: CIImage?) -> CIImage? {
+        guard let sourceImage else {
+            return nil
+        }
+
+        let extent = sourceImage.extent.integral
+        let longest = max(extent.width, extent.height)
+        guard longest > 0 else {
+            return sourceImage
+        }
+
+        let scale = min(1, interactivePreviewMaxDimension / longest)
+        guard scale < 0.999 else {
+            return sourceImage
+        }
+
+        let filter = CIFilter(name: "CILanczosScaleTransform")
+        filter?.setValue(sourceImage, forKey: kCIInputImageKey)
+        filter?.setValue(scale, forKey: kCIInputScaleKey)
+        filter?.setValue(1.0, forKey: kCIInputAspectRatioKey)
+        guard let scaledOutput = filter?.outputImage else {
+            return sourceImage
+        }
+        let scaled = scaledOutput.cropped(to: scaledOutput.extent.integral)
+
+        guard let cgImage = displayContext.createCGImage(scaled, from: scaled.extent) else {
+            return scaled
+        }
+
+        return CIImage(cgImage: cgImage)
+    }
+
+    func scheduleInteractiveRender() {
+        guard isDraggingCurve else {
+            renderCurrentImage(quality: .full)
+            return
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let minInterval = 1 / interactiveRenderFPS
+        let elapsed = now - lastInteractiveRenderUptime
+
+        if elapsed >= minInterval {
+            lastInteractiveRenderUptime = now
+            renderCurrentImage(quality: .interactive)
+            return
+        }
+
+        interactiveRenderScheduledTask?.cancel()
+        let delay = max(0, minInterval - elapsed)
+        interactiveRenderScheduledTask = Task { [weak self] in
+            let delayNanos = UInt64(delay * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: delayNanos)
+            guard let self, !Task.isCancelled, self.isDraggingCurve else {
+                return
+            }
+            self.lastInteractiveRenderUptime = ProcessInfo.processInfo.systemUptime
+            self.renderCurrentImage(quality: .interactive)
+        }
+    }
+
+    enum RenderQuality {
+        case interactive
+        case full
+    }
 }
 
 private extension ViewController {
@@ -327,7 +421,7 @@ private extension ViewController {
         editorView.curveSet = ToneCurveSet.identity
         channelSelectorView.selectedChannel = .master
         editorView.activeChannel = .master
-        renderCurrentImage()
+        renderCurrentImage(quality: .full)
     }
 
     @objc
@@ -336,7 +430,7 @@ private extension ViewController {
             return
         }
         editorView.curveSet = preset.curveSet()
-        renderCurrentImage()
+        renderCurrentImage(quality: .full)
     }
 
     @objc
@@ -352,6 +446,20 @@ private extension ViewController {
         if presetSegmentedControl.selectedSegmentIndex != UISegmentedControl.noSegment {
             presetSegmentedControl.selectedSegmentIndex = UISegmentedControl.noSegment
         }
-        renderCurrentImage()
+        scheduleInteractiveRender()
+    }
+
+    @objc
+    func curveEditingDidBegin() {
+        isDraggingCurve = true
+        interactiveRenderScheduledTask?.cancel()
+        statusLabel.text = "Rendering preview..."
+    }
+
+    @objc
+    func curveEditingDidEnd() {
+        isDraggingCurve = false
+        interactiveRenderScheduledTask?.cancel()
+        renderCurrentImage(quality: .full)
     }
 }

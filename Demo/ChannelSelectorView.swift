@@ -9,6 +9,8 @@ import ToneCurveEditor
 import UIKit
 
 final class ChannelSelectorView: UIView {
+    private static let iconPointSize: CGFloat = 22
+
     var onChannelChanged: ((ToneCurveChannel) -> Void)?
     var onResetTapped: (() -> Void)?
 
@@ -22,12 +24,17 @@ final class ChannelSelectorView: UIView {
     private let channels: [ToneCurveChannel] = [.master, .red, .green, .blue]
     private var buttonsByChannel: [ToneCurveChannel: UIButton] = [:]
     private let resetButton = UIButton(type: .system)
-    private let masterWheelIcon = ChannelSelectorView.makeMasterWheelIcon(diameter: 18)
+    private let masterIcon = ChannelSelectorView.makeMasterAssetIcon(
+        pointSize: ChannelSelectorView.iconPointSize
+    )
+    private let solidDiskIcon = ChannelSelectorView.makeSolidDiskIcon(
+        diameter: ChannelSelectorView.iconPointSize
+    )
     private let selectionIndicator = UIView()
     private var selectionIndicatorCenterYConstraint: NSLayoutConstraint?
 
     override var intrinsicContentSize: CGSize {
-        CGSize(width: 50, height: UIView.noIntrinsicMetric)
+        CGSize(width: 44, height: UIView.noIntrinsicMetric)
     }
 
     override init(frame: CGRect) {
@@ -64,6 +71,10 @@ private extension ChannelSelectorView {
             imageColor: UIColor.secondaryLabel
         )
         resetButton.configuration?.image = UIImage(systemName: "arrow.counterclockwise")
+        resetButton.configuration?.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
+            pointSize: 18,
+            weight: .semibold
+        )
         resetButton.layer.cornerRadius = 10
         resetButton.layer.masksToBounds = true
         resetButton.addAction(
@@ -79,10 +90,8 @@ private extension ChannelSelectorView {
         buttonsStack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(buttonsStack)
         NSLayoutConstraint.activate([
-            buttonsStack.topAnchor.constraint(equalTo: topAnchor),
-            buttonsStack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            buttonsStack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            buttonsStack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            buttonsStack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            buttonsStack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
         selectionIndicator.backgroundColor = .systemOrange
@@ -133,82 +142,58 @@ private extension ChannelSelectorView {
         config.baseBackgroundColor = backgroundColor
         config.baseForegroundColor = imageColor
         config.cornerStyle = .capsule
-        config.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10)
+        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
+            pointSize: Self.iconPointSize,
+            weight: .semibold
+        )
+        config.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8)
         return config
     }
 
     func icon(for channel: ToneCurveChannel) -> UIImage? {
         switch channel {
         case .master:
-            masterWheelIcon
+            masterIcon
         case .red:
-            UIImage(systemName: "circle.fill")
+            solidDiskIcon
         case .green:
-            UIImage(systemName: "circle.fill")
+            solidDiskIcon
         case .blue:
-            UIImage(systemName: "circle.fill")
+            solidDiskIcon
         }
     }
 
-    static func makeMasterWheelIcon(diameter: CGFloat) -> UIImage {
+    static func makeSolidDiskIcon(diameter: CGFloat) -> UIImage {
         let size = CGSize(width: diameter, height: diameter)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        return renderer.image { context in
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        format.scale = max(UIScreen.main.scale, 3) * 2
+
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let image = renderer.image { context in
             let cg = context.cgContext
-            let rect = CGRect(origin: .zero, size: size)
-            let center = CGPoint(x: rect.midX, y: rect.midY)
-            let radius = diameter * 0.5
-            let segments = 180
-
-            cg.saveGState()
-            cg.addEllipse(in: rect)
-            cg.clip()
-
-            for index in 0..<segments {
-                let start = (CGFloat(index) / CGFloat(segments)) * .pi * 2
-                let end = (CGFloat(index + 1) / CGFloat(segments)) * .pi * 2
-                let hue = CGFloat(index) / CGFloat(segments)
-
-                cg.move(to: center)
-                cg.addArc(
-                    center: center,
-                    radius: radius,
-                    startAngle: start,
-                    endAngle: end,
-                    clockwise: false
-                )
-                cg.closePath()
-                cg.setFillColor(UIColor(hue: hue, saturation: 1, brightness: 1, alpha: 1).cgColor)
-                cg.fillPath()
-            }
-
-            let colors = [
-                UIColor.white.withAlphaComponent(0.95).cgColor,
-                UIColor.white.withAlphaComponent(0).cgColor,
-            ] as CFArray
-            let locations: [CGFloat] = [0, 0.82]
-            if
-                let gradient = CGGradient(
-                    colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                    colors: colors,
-                    locations: locations
-                ) {
-                cg.drawRadialGradient(
-                    gradient,
-                    startCenter: center,
-                    startRadius: 0,
-                    endCenter: center,
-                    endRadius: radius,
-                    options: []
-                )
-            }
-            cg.restoreGState()
-
-            cg.setStrokeColor(UIColor.white.withAlphaComponent(0.45).cgColor)
-            cg.setLineWidth(0.7)
-            cg.strokeEllipse(in: rect.insetBy(dx: 0.35, dy: 0.35))
+            let rect = CGRect(origin: .zero, size: size).insetBy(dx: 0.4, dy: 0.4)
+            cg.setFillColor(UIColor.white.cgColor)
+            cg.fillEllipse(in: rect)
         }
-        .withRenderingMode(.alwaysOriginal)
+        return image.withRenderingMode(.alwaysTemplate)
+    }
+
+    static func makeMasterAssetIcon(pointSize: CGFloat) -> UIImage? {
+        guard let assetImage = UIImage(named: "master") else {
+            return nil
+        }
+
+        let size = CGSize(width: pointSize, height: pointSize)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        format.scale = max(UIScreen.main.scale, 3)
+
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let image = renderer.image { _ in
+            assetImage.draw(in: CGRect(origin: .zero, size: size))
+        }
+        return image.withRenderingMode(.alwaysOriginal)
     }
 
     func color(for channel: ToneCurveChannel) -> UIColor {
@@ -237,7 +222,7 @@ private extension ChannelSelectorView {
             config.baseBackgroundColor = .clear
             config.baseForegroundColor = accent.withAlphaComponent(isSelected ? 1 : 0.62)
             button.alpha = isSelected ? 1 : 0.72
-            button.transform = isSelected ? CGAffineTransform(scaleX: 1.1, y: 1.1) : .identity
+            button.transform = .identity
             button.configuration = config
         }
 
