@@ -27,6 +27,11 @@ xcodegen generate
 2. 在 Xcode 打开 `ToneCurveEditorDemo.xcodeproj`。
 3. 运行 `Demo` scheme 体验编辑与渲染链路。
 
+## 截图
+| Demo 首页 | 曲线编辑与预览 |
+| --- | --- |
+| ![Demo 首页](screenshots/1.png) | ![曲线编辑与预览](screenshots/2.png) |
+
 ## SwiftPM 集成
 在业务项目 `Package.swift` 中添加：
 ```swift
@@ -81,5 +86,4 @@ swiftformat .
 - Agent 协作约束：`/AGENTS.md`
 
 ## 文档
-- 实施方案：`docs/ToneCurveEditor_Agent_Implementation_Plan.md`
 - 性能基线：`docs/PerformanceBaseline.md`
